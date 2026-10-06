@@ -6,7 +6,7 @@ To read them, join the Register:
 
 **https://app.extol.work/groups/node-operator-register**
 
-Non-signers welcome 🙂
+Non-signers welcome 🤟
 
 ## Independent verification
 
