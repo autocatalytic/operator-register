@@ -146,18 +146,20 @@ function cmdEmit(args) {
   const bound = nodes.filter(n => n.status === "bound");
   if (bound.length === 0) die("at least one bound node required");
 
-  process.stderr.write(`\n=== Per-node binding messages ===\n`);
+  process.stderr.write(`\n=== Per-node binding ceremony ===\n`);
   process.stderr.write(`Identity: ${args.identity}\n\n`);
-  process.stderr.write(`For each vote account below, sign the message with that account's\n`);
-  process.stderr.write(`key (withdrawer preferred, identity acceptable):\n\n`);
-  process.stderr.write(`    solana sign-offchain-message -k <keypair>.json "<message>"\n\n`);
-  process.stderr.write(`Collect the base58 signatures. You will pass them to 'assemble'.\n\n`);
+  process.stderr.write(`For each vote account below, run the printed command with the path to\n`);
+  process.stderr.write(`that account's keypair (withdrawer preferred, identity acceptable).\n`);
+  process.stderr.write(`Collect the base58 signatures. You will pass them to 'assemble'.\n`);
 
   for (const node of bound) {
     const msg = challenge(args.identity, node.vote_account);
-    process.stdout.write(`${node.vote_account}\n`);
-    process.stdout.write(`  ${msg}\n`);
-    process.stdout.write(`\n`);
+    process.stdout.write(`\n=== Vote account ${node.vote_account} - sign this ===\n\n`);
+    process.stdout.write(`solana sign-offchain-message -k <withdrawer-or-identity-keypair>.json \\\n`);
+    process.stdout.write(`  '${msg}'\n\n`);
+    process.stdout.write(`(Replace <...-keypair> with the path to your keypair file. The quoted\n`);
+    process.stdout.write(`string is the entire message; the quotes themselves are shell syntax,\n`);
+    process.stdout.write(`not part of what gets signed.)\n`);
   }
 }
 
