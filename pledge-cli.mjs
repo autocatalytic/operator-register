@@ -3,25 +3,52 @@
 //
 // Operator Register pledge-building tool.
 //
-// Three subcommands walk an operator from scratch to a signed blob ready
-// to paste into the Register's web interface:
+// Primary command:
 //
-//   emit      Prints one plaintext binding message per bound vote account.
-//             Sign each with the vote account's key (identity or withdrawer).
+//   sign      Interactive end-to-end ceremony. Prompts for your keypair paths,
+//             spawns 'solana sign-offchain-message' for each signature, and
+//             prints the final JSON blob to paste into the Register's web
+//             interface. This tool never reads your private keys; it only
+//             orchestrates the standard 'solana' CLI.
 //
-//   assemble  Builds the canonical pledge payload from the collected per-node
-//             counter-signatures and prints the bytes to stdout. Save the
-//             bytes to a file, then sign them with your root identity key.
+// Scripted-use subcommands (for integrators who want finer control):
 //
-//   finalize  Reads the canonical bytes from a file and attaches your root
-//             signature. Prints the final JSON blob to paste into the UI.
+//   emit      Print one plaintext binding message per bound vote account.
+//   assemble  Build canonical pledge payload from collected counter-sigs.
+//   finalize  Attach root signature to a saved canonical payload.
 //
-// Zero dependencies. Node.js 20 or later. Uses the built-in Ed25519 primitive
-// via node:crypto for message hashing. All Ed25519 signing is done by the
-// operator via `solana sign-offchain-message`, not by this tool.
+// Zero dependencies. Node.js 20 or later. Requires 'solana' CLI on PATH for
+// 'sign' subcommand. All Ed25519 signing is done by the operator via
+// 'solana sign-offchain-message'; this tool never touches your private keys.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+
+// -------- Current Register version pins (bump on each Rules revision) --------
+
+const CURRENT_RULES = {
+  arweave_tx: "eRPyS69zwik98PX4cnKfXbAoCMWCKTKi83UPxQTKw3c",
+  arweave_url: "https://arweave.net/eRPyS69zwik98PX4cnKfXbAoCMWCKTKi83UPxQTKw3c",
+  sha256: "fd116cbf09290814d56368b14a434582c5844653fc3502190ce7528e08c884ff",
+  sas_pda: "HS9M1GdzkLWyz8yUsvrebQCcvoBxs9uazVDbyBzx4bhx",
+};
+
+const CURRENT_ORACLES = {
+  arweave_tx: "cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
+  arweave_url: "https://arweave.net/cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
+  sha256: "458c3278b03eadbfb624a3f431ba4fd27a0a3f607c6f017a5d1437762a414a8b",
+  sas_pda: "6QWR4QErF4ygnjRfPfULamfs8u3HFCg5wFm1S1EzYXP8",
+};
+
+const CURRENT_PLEDGE = {
+  arweave_tx: "S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
+  arweave_url: "https://arweave.net/S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
+  sha256: "9079c70c14e37fbd07e57c981b71295d4b343c15e9a44e8b7c012df6e0695f37",
+  sas_pda: "EM38Xy2nWWbdS44VhdhgUXS7w8iNRKnAMFLiEFiwekvW",
+};
 
 // -------- Base58 (hand-rolled, Bitcoin alphabet, same as Solana) --------
 
@@ -95,7 +122,6 @@ function parseNodeSpec(spec) {
   };
   if (status === "bound") {
     if (keyType === undefined && counterSig === undefined) {
-      // emit mode -- counter-sig fields not required
       return node;
     }
     if (!keyType || !counterSig) {
@@ -135,7 +161,325 @@ function parseArgs(argv, startIdx) {
   return args;
 }
 
-// -------- Subcommands --------
+// -------- Child-process signing (sign subcommand only) --------
+
+function checkSolanaCli() {
+  const r = spawnSync("solana", ["--version"], { encoding: "utf8" });
+  if (r.status !== 0) {
+    die(
+      "'solana' CLI not found on PATH.\n" +
+      "Install it from https://docs.anza.xyz/cli/install and re-run.",
+    );
+  }
+  return r.stdout.trim();
+}
+
+function spawnSign(keypairPath, message) {
+  // Spawn solana sign-offchain-message as a child process. The private key
+  // bytes never leave the 'solana' CLI; this tool only passes the keypair
+  // FILE PATH and the message text.
+  const r = spawnSync(
+    "solana",
+    ["sign-offchain-message", "-k", keypairPath, message],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    die(
+      `solana sign-offchain-message failed (exit ${r.status}):\n` +
+      `  stdout: ${r.stdout?.trim() || "(empty)"}\n` +
+      `  stderr: ${r.stderr?.trim() || "(empty)"}`,
+    );
+  }
+  const sig = r.stdout.trim();
+  if (!isBase58Signature(sig)) {
+    die(`solana returned unexpected output (expected base58 signature):\n${sig}`);
+  }
+  return sig;
+}
+
+function solanaAddress(keypairPath) {
+  // Resolve the pubkey for a given keypair file. Used to confirm which
+  // identity the operator is actually using before any signing.
+  const r = spawnSync(
+    "solana-keygen",
+    ["pubkey", keypairPath],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    die(
+      `solana-keygen pubkey failed for '${keypairPath}' (exit ${r.status}):\n` +
+      `  stderr: ${r.stderr?.trim() || "(empty)"}`,
+    );
+  }
+  const pk = r.stdout.trim();
+  if (!isSolanaPubkey(pk)) {
+    die(`solana-keygen returned unexpected pubkey: '${pk}'`);
+  }
+  return pk;
+}
+
+function solanaGenKeypair(outPath) {
+  // Generate a new keypair and write it to outPath. Used for the continuation
+  // key when the operator does not supply one.
+  const r = spawnSync(
+    "solana-keygen",
+    ["new", "--no-bip39-passphrase", "--silent", "-o", outPath],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    die(
+      `solana-keygen new failed (exit ${r.status}):\n` +
+      `  stderr: ${r.stderr?.trim() || "(empty)"}`,
+    );
+  }
+  return solanaAddress(outPath);
+}
+
+// -------- Interactive 'sign' subcommand --------
+
+async function cmdSign() {
+  const rl = createInterface({ input: stdin, output: stdout });
+  const ask = async (q) => (await rl.question(q)).trim();
+  const askYN = async (q, def) => {
+    const d = def === true ? "Y/n" : "y/N";
+    const a = (await ask(`${q} [${d}] `)).toLowerCase();
+    if (a === "") return def;
+    return a === "y" || a === "yes";
+  };
+
+  try {
+    process.stdout.write(`
+=== Operator Register pledge ceremony ===
+
+This tool walks you through signing a pledge against the current Register
+documents. Nothing is sent to the chain or to any server by this tool; the
+final step is a JSON blob you paste into the Register's web interface.
+
+Current Register versions you are about to pledge against:
+
+  Rules
+    sha256:  ${CURRENT_RULES.sha256}
+    Arweave: ${CURRENT_RULES.arweave_url}
+    on-chain: ${CURRENT_RULES.sas_pda}
+
+  Oracles bundle
+    sha256:  ${CURRENT_ORACLES.sha256}
+    Arweave: ${CURRENT_ORACLES.arweave_url}
+    on-chain: ${CURRENT_ORACLES.sas_pda}
+
+  Pledge text
+    sha256:  ${CURRENT_PLEDGE.sha256}
+    Arweave: ${CURRENT_PLEDGE.arweave_url}
+    on-chain: ${CURRENT_PLEDGE.sas_pda}
+
+Fetch each Arweave URL and run 'shasum -a 256' against the file if you want
+to verify the hashes above before signing. The web interface will reject a
+pledge that does not match the current Rules + Oracles hashes.
+
+`);
+
+    const proceed = await askYN("Ready to begin?", true);
+    if (!proceed) {
+      rl.close();
+      process.stderr.write("Aborted.\n");
+      return;
+    }
+
+    const solanaVersion = checkSolanaCli();
+    process.stdout.write(`\nFound: ${solanaVersion}\n`);
+
+    // ---- Step 1: Identity (root) keypair ----
+
+    process.stdout.write(`
+=== Step 1 of 4: Your root identity key ===
+
+This is the key that signs the pledge itself. In a production ceremony this
+is your validator identity key, held offline. For a dry-run or dev ceremony
+it can be any keypair you control.
+
+`);
+    const identityPath = await ask("Path to your root identity keypair file: ");
+    if (!identityPath || !existsSync(identityPath)) {
+      die(`keypair file not found: '${identityPath}'`);
+    }
+    const identityPubkey = solanaAddress(identityPath);
+    process.stdout.write(`  pubkey: ${identityPubkey}\n`);
+    const identityOk = await askYN("Is this the right identity?", true);
+    if (!identityOk) {
+      rl.close();
+      process.stderr.write("Aborted.\n");
+      return;
+    }
+
+    // ---- Step 2: Continuation keypair ----
+
+    process.stdout.write(`
+=== Step 2 of 4: Your continuation key ===
+
+The continuation key signs a daily "still standing" message that keeps your
+pledge fresh. It should live on your signing machine (warm), not in cold
+storage. A compromised continuation key can only stop your clock; it cannot
+re-swear or expand your pledge.
+
+You can supply an existing keypair, or let this tool generate a new one and
+save it to a file you choose.
+
+`);
+    const genCont = await askYN(
+      "Generate a new continuation keypair? (choose No to supply your own)",
+      true,
+    );
+    let continuationPath, continuationPubkey;
+    if (genCont) {
+      const defaultPath = "./pledge-continuation.json";
+      const customPath = await ask(
+        `Save new continuation key to [${defaultPath}]: `,
+      );
+      continuationPath = customPath || defaultPath;
+      if (existsSync(continuationPath)) {
+        die(`refusing to overwrite existing file: '${continuationPath}'`);
+      }
+      continuationPubkey = solanaGenKeypair(continuationPath);
+      process.stdout.write(
+        `  generated: ${continuationPubkey}\n` +
+        `  saved to:  ${continuationPath}\n` +
+        `  Keep this file safe. It is a signing key, but less sensitive than\n` +
+        `  the root. Losing it only breaks continuation; it cannot be used to\n` +
+        `  alter your pledge.\n`,
+      );
+    } else {
+      continuationPath = await ask("Path to your continuation keypair file: ");
+      if (!continuationPath || !existsSync(continuationPath)) {
+        die(`keypair file not found: '${continuationPath}'`);
+      }
+      continuationPubkey = solanaAddress(continuationPath);
+      process.stdout.write(`  pubkey: ${continuationPubkey}\n`);
+    }
+
+    // ---- Step 3: Vote accounts + per-node signatures ----
+
+    process.stdout.write(`
+=== Step 3 of 4: Bound vote accounts ===
+
+List each vote account you are binding to this pledge. For each one, you
+will provide the path to a keypair that controls it (the account's
+withdrawer keypair is preferred; the identity keypair is acceptable).
+
+This tool will spawn 'solana sign-offchain-message' against each keypair
+file; the private key never leaves the solana CLI.
+
+Enter vote accounts one at a time. When done, leave the input blank.
+
+`);
+    const nodes = [];
+    const seen = new Set();
+    let idx = 0;
+    while (true) {
+      idx++;
+      const vote = await ask(
+        `  Vote account ${idx} (base58 pubkey, blank to finish): `,
+      );
+      if (!vote) break;
+      if (!isSolanaPubkey(vote)) {
+        process.stdout.write(`    not a valid base58 pubkey; try again.\n`);
+        idx--;
+        continue;
+      }
+      if (seen.has(vote)) {
+        process.stdout.write(`    already listed; try again.\n`);
+        idx--;
+        continue;
+      }
+      seen.add(vote);
+
+      const kpPath = await ask(
+        `    Path to keypair controlling ${vote.slice(0, 8)}...: `,
+      );
+      if (!kpPath || !existsSync(kpPath)) {
+        die(`keypair file not found: '${kpPath}'`);
+      }
+      const kpKind = await ask(
+        `    Is this the 'withdrawer' or 'identity' keypair? [withdrawer/identity]: `,
+      );
+      if (!["withdrawer", "identity"].includes(kpKind)) {
+        die(`key kind must be 'withdrawer' or 'identity', got '${kpKind}'`);
+      }
+
+      const msg = challenge(identityPubkey, vote);
+      process.stdout.write(`    signing: ${msg}\n`);
+      const sig = spawnSign(kpPath, msg);
+      process.stdout.write(`    signature: ${sig.slice(0, 20)}...\n`);
+
+      nodes.push({
+        vote_account: vote,
+        status: "bound",
+        oath_coverage: "beneficial_interest",
+        counter_sig_key_type: kpKind,
+        counter_signature: sig,
+      });
+    }
+    if (nodes.length === 0) {
+      die("at least one bound vote account is required");
+    }
+
+    // ---- Step 4: Build canonical, sign root, print blob ----
+
+    process.stdout.write(`
+=== Step 4 of 4: Sign the full pledge ===
+
+Building canonical pledge bytes and signing with your root key...
+
+`);
+    const epoch = currentRegisterEpoch();
+    const signedAtUtc = new Date().toISOString();
+    const payload = {
+      type: "operator-pledge.v1",
+      identity_pubkey: identityPubkey,
+      continuation_pubkey: continuationPubkey,
+      register_rules_hash: CURRENT_RULES.sha256,
+      oracles_hash: CURRENT_ORACLES.sha256,
+      covers_epochs: [epoch, epoch + 1, epoch + 2, epoch + 3],
+      signed_at_slot: "0",
+      signed_at_utc: signedAtUtc,
+      nodes: nodes.slice().sort((a, b) =>
+        a.vote_account.localeCompare(b.vote_account),
+      ),
+    };
+    const canonical = canonicalize(payload);
+    const canonicalSha = createHash("sha256")
+      .update(canonical, "utf8")
+      .digest("hex");
+
+    process.stdout.write(`  canonical bytes: ${Buffer.byteLength(canonical, "utf8")}\n`);
+    process.stdout.write(`  canonical sha256: ${canonicalSha}\n`);
+    process.stdout.write(`  covers epochs: ${payload.covers_epochs.join(", ")}\n`);
+    process.stdout.write(`  signing with root keypair at ${identityPath}...\n`);
+
+    const rootSig = spawnSign(identityPath, canonical);
+    process.stdout.write(`  root signature: ${rootSig.slice(0, 20)}...\n`);
+
+    const blob = {
+      canonical,
+      root_sig: rootSig,
+      root_sig_format: "restricted-ascii",
+    };
+
+    process.stdout.write(`\n=== Done ===\n\n`);
+    process.stdout.write(
+      `Paste the JSON below into the Register's "Paste signed package" field.\n` +
+      `Optionally save a copy; it is safe to keep (it is public once anchored).\n\n` +
+      `---\n`,
+    );
+    rl.close();
+    process.stdout.write(JSON.stringify(blob, null, 2));
+    process.stdout.write("\n");
+  } catch (err) {
+    rl.close();
+    throw err;
+  }
+}
+
+// -------- Scripted subcommands (unchanged behavior) --------
 
 function cmdEmit(args) {
   if (!args.identity) die("--identity required");
@@ -182,7 +526,6 @@ function cmdAssemble(args) {
     if (!n.counter_signature) die(`bound node ${n.vote_account} missing counter_sig in assemble mode`);
   }
 
-  // Reject duplicates.
   const seen = new Set();
   for (const n of nodes) {
     if (seen.has(n.vote_account)) die(`duplicate vote account: ${n.vote_account}`);
@@ -250,10 +593,8 @@ function cmdFinalize(args) {
   } catch (err) {
     die(`cannot read --from file '${args.from}': ${err.message}`);
   }
-  // Strip a single trailing newline if present (common with shell > redirects).
   if (canonical.endsWith("\n")) canonical = canonical.slice(0, -1);
 
-  // Sanity check that the file looks like a canonical pledge payload.
   let parsed;
   try {
     parsed = JSON.parse(canonical);
@@ -289,42 +630,41 @@ function usage() {
   process.stderr.write(`
 Operator Register pledge-building tool.
 
-Usage:
+Primary command:
+
+  node pledge-cli.mjs sign
+
+    Interactive end-to-end ceremony. Prompts for your keypair paths, spawns
+    'solana sign-offchain-message' for each signature, and prints the final
+    JSON blob to paste into the Register's web interface.
+
+Scripted-use subcommands (for integrators who want finer control):
+
   node pledge-cli.mjs emit --identity <base58> \\
-    --node <vote_account>:bound:beneficial_interest \\
-    [--node <vote_account>:hosted:conduct_control] \\
-    [--node <vote_account>:excluded:beneficial_interest]
+    --node <vote_account>:bound:beneficial_interest ...
 
   node pledge-cli.mjs assemble --identity <base58> \\
     --continuation <base58> \\
     --rules-hash <64hex> --oracles-hash <64hex> \\
-    --node <vote_account>:bound:beneficial_interest:identity:<counter_sig> \\
-    [--node <vote_account>:hosted:conduct_control] \\
-    [--epoch <YYYYMMDD>] [--signed-at <ISO8601>] [--signed-at-slot <N>]
+    --node <vote_account>:bound:beneficial_interest:identity:<counter_sig> ...
 
   node pledge-cli.mjs finalize --from <canonical.json> \\
     --root-sig <base58> [--root-sig-format restricted-ascii|utf8]
-
-Subcommands:
-  emit      Print one plaintext binding message per bound vote account.
-            Sign each with: solana sign-offchain-message -k <keypair>.json <message>
-
-  assemble  Build the canonical pledge payload. Prints to stdout. Save the
-            output to a file, then sign the file contents with your root key.
-
-  finalize  Attach a root signature to a saved canonical payload. Prints the
-            final JSON blob to paste into the Register's web interface.
 
 See README.md for the full ceremony flow.
 `);
   process.exit(1);
 }
 
-function main() {
+async function main() {
   const argv = process.argv;
   if (argv.length < 3) usage();
   const subcmd = argv[2];
   if (subcmd === "--help" || subcmd === "-h" || subcmd === "help") usage();
+  if (subcmd === "sign") {
+    await cmdSign();
+    return;
+  }
   const args = parseArgs(argv, 3);
   if (subcmd === "emit") cmdEmit(args);
   else if (subcmd === "assemble") cmdAssemble(args);
@@ -335,4 +675,4 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => die(err?.stack ?? String(err)));
