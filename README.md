@@ -1,14 +1,11 @@
 # Operator Register
 
-Public toolkit for signing an Operator Register pledge.
+Public toolkit for signing an Operator Register pledge. The Register itself is a public record of Solana validator operators who stand behind their own conduct. Its governing documents (the Rules, the Pledge, and the designated oracles) are durably stored on Arweave and anchored on Solana mainnet.
 
-Published under Apache 2.0 by Otto.
 
 ## What this is
 
 A zero-dependency Node.js tool that helps an operator produce the signed blob the Register needs to add them to the roster.
-
-The Register itself is a public record of Solana validator operators who stand behind their own conduct. Its governing documents (the Rules, the Pledge, and the designated oracles) are durably stored on Arweave and anchored on Solana mainnet.
 
 ## How to use
 
