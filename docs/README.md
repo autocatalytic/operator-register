@@ -4,7 +4,7 @@ The Rules, the Pledge, and the designated oracles bundle live inside the Registe
 
 To read them, join the Register:
 
-**https://app.extol.work/groups/e0870a06-ef03-4373-84ac-6543be962ac5**
+**https://app.extol.work/groups/node-operator-register**
 
 Non-signers welcome 🙂
 
