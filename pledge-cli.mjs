@@ -26,17 +26,31 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { homedir } from "node:os";
+import { resolve as pathResolve } from "node:path";
+
+// Expand a leading '~' to the operator's home directory so paths like
+// '~/.config/solana/id.json' work from any prompt. Node's fs calls do not
+// expand '~' the way shells do.
+function resolvePath(p) {
+  if (typeof p !== "string" || p.length === 0) return p;
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return pathResolve(homedir(), p.slice(2));
+  return pathResolve(p);
+}
 
 // -------- Current Register version pins (bump on each Rules revision) --------
 
 const CURRENT_RULES = {
-  arweave_tx: "eRPyS69zwik98PX4cnKfXbAoCMWCKTKi83UPxQTKw3c",
-  arweave_url: "https://arweave.net/eRPyS69zwik98PX4cnKfXbAoCMWCKTKi83UPxQTKw3c",
-  sha256: "fd116cbf09290814d56368b14a434582c5844653fc3502190ce7528e08c884ff",
-  sas_pda: "HS9M1GdzkLWyz8yUsvrebQCcvoBxs9uazVDbyBzx4bhx",
+  version: "v1",
+  arweave_tx: "MtIdHsqQA6wueXOtDr_ZynFR_EjPbFaM1x8Vl6Mhrj4",
+  arweave_url: "https://arweave.net/MtIdHsqQA6wueXOtDr_ZynFR_EjPbFaM1x8Vl6Mhrj4",
+  sha256: "f2776d21a17c33fbe029ebdfaa7b478b996fbe58f83e7982ea19e8318e41e4df",
+  sas_pda: "6UYH81ftREVxZSkYXrzHQmrQspdGrsX8rk5VWUKtgMVi",
 };
 
 const CURRENT_ORACLES = {
+  version: "v0",
   arweave_tx: "cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
   arweave_url: "https://arweave.net/cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
   sha256: "458c3278b03eadbfb624a3f431ba4fd27a0a3f607c6f017a5d1437762a414a8b",
@@ -44,10 +58,22 @@ const CURRENT_ORACLES = {
 };
 
 const CURRENT_PLEDGE = {
+  version: "v0",
   arweave_tx: "S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
   arweave_url: "https://arweave.net/S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
   sha256: "9079c70c14e37fbd07e57c981b71295d4b343c15e9a44e8b7c012df6e0695f37",
   sas_pda: "EM38Xy2nWWbdS44VhdhgUXS7w8iNRKnAMFLiEFiwekvW",
+};
+
+// Register-held infrastructure keys. v0 ships with the Register holding the
+// continuation key in non-extractable KMS; operators consent by naming it in
+// their pledge. Rotations ship as a new entry in this block.
+const CURRENT_INFRA_KEYS = {
+  version: "v0",
+  arweave_tx: "jRSxQFJAlVHsglLALJ4ER7xds5eDJ4llD5pH9ejVSiU",
+  arweave_url: "https://arweave.net/jRSxQFJAlVHsglLALJ4ER7xds5eDJ4llD5pH9ejVSiU",
+  sha256: "2163eccf755a1301e8b1533c7ef0a24b959b93482943f9d809999e5cc80bdfd2",
+  continuation_pubkey: "J7socF4aMnzkP9uh52STQ1hFuryvAxHh94AQmBoKWtVo",
 };
 
 // -------- Base58 (hand-rolled, Bitcoin alphabet, same as Solana) --------
@@ -218,21 +244,44 @@ function solanaAddress(keypairPath) {
   return pk;
 }
 
-function solanaGenKeypair(outPath) {
-  // Generate a new keypair and write it to outPath. Used for the continuation
-  // key when the operator does not supply one.
+function solanaVoteAccount(voteAccountPubkey) {
+  // Fetch an on-chain vote account via the 'solana' CLI against mainnet-beta
+  // and return the two keys needed for counter-sig verification: the
+  // authorized withdrawer and the validator identity (nodePubkey).
+  //
+  // --url mainnet-beta is passed explicitly so the operator's local 'solana
+  // config get' default (which may point at devnet or localhost for other
+  // work) does not surprise us.
   const r = spawnSync(
-    "solana-keygen",
-    ["new", "--no-bip39-passphrase", "--silent", "-o", outPath],
+    "solana",
+    [
+      "vote-account", voteAccountPubkey,
+      "--url", "mainnet-beta",
+      "--output", "json-compact",
+    ],
     { encoding: "utf8" },
   );
   if (r.status !== 0) {
     die(
-      `solana-keygen new failed (exit ${r.status}):\n` +
+      `solana vote-account failed for '${voteAccountPubkey}' (exit ${r.status}):\n` +
       `  stderr: ${r.stderr?.trim() || "(empty)"}`,
     );
   }
-  return solanaAddress(outPath);
+  let parsed;
+  try {
+    parsed = JSON.parse(r.stdout);
+  } catch (err) {
+    die(`solana returned non-JSON for '${voteAccountPubkey}':\n${r.stdout.trim()}`);
+  }
+  const identity = parsed.nodePubkey ?? parsed.validatorIdentity;
+  const withdrawer = parsed.authorizedWithdrawer;
+  if (!isSolanaPubkey(identity) || !isSolanaPubkey(withdrawer)) {
+    die(
+      `solana vote-account did not expose the expected keys for '${voteAccountPubkey}'.\n` +
+      `  parsed: ${JSON.stringify(parsed).slice(0, 200)}...`,
+    );
+  }
+  return { identity, withdrawer };
 }
 
 // -------- Interactive 'sign' subcommand --------
@@ -257,20 +306,25 @@ final step is a JSON blob you paste into the Register's web interface.
 
 Current Register versions you are about to pledge against:
 
-  Rules
+  Rules (${CURRENT_RULES.version})
     sha256:  ${CURRENT_RULES.sha256}
     Arweave: ${CURRENT_RULES.arweave_url}
     on-chain: ${CURRENT_RULES.sas_pda}
 
-  Oracles bundle
+  Oracles bundle (${CURRENT_ORACLES.version})
     sha256:  ${CURRENT_ORACLES.sha256}
     Arweave: ${CURRENT_ORACLES.arweave_url}
     on-chain: ${CURRENT_ORACLES.sas_pda}
 
-  Pledge text
+  Pledge text (${CURRENT_PLEDGE.version})
     sha256:  ${CURRENT_PLEDGE.sha256}
     Arweave: ${CURRENT_PLEDGE.arweave_url}
     on-chain: ${CURRENT_PLEDGE.sas_pda}
+
+  Infrastructure keys (${CURRENT_INFRA_KEYS.version})
+    sha256:  ${CURRENT_INFRA_KEYS.sha256}
+    Arweave: ${CURRENT_INFRA_KEYS.arweave_url}
+    continuation pubkey: ${CURRENT_INFRA_KEYS.continuation_pubkey}
 
 Fetch each Arweave URL and run 'shasum -a 256' against the file if you want
 to verify the hashes above before signing. The web interface will reject a
@@ -298,7 +352,7 @@ is your validator identity key, held offline. For a dry-run or dev ceremony
 it can be any keypair you control.
 
 `);
-    const identityPath = await ask("Path to your root identity keypair file: ");
+    const identityPath = resolvePath(await ask("Path to your root identity keypair file: "));
     if (!identityPath || !existsSync(identityPath)) {
       die(`keypair file not found: '${identityPath}'`);
     }
@@ -311,49 +365,31 @@ it can be any keypair you control.
       return;
     }
 
-    // ---- Step 2: Continuation keypair ----
+    // ---- Step 2: Continuation key (Register-held in v0) ----
 
     process.stdout.write(`
-=== Step 2 of 4: Your continuation key ===
+=== Step 2 of 4: The continuation key ===
 
 The continuation key signs a daily "still standing" message that keeps your
-pledge fresh. It should live on your signing machine (warm), not in cold
-storage. A compromised continuation key can only stop your clock; it cannot
-re-swear or expand your pledge.
+pledge fresh between re-pledges. In v0, the Register holds this key in
+non-extractable KMS. By signing a pledge that names it, you consent to that
+key emitting daily on your behalf.
 
-You can supply an existing keypair, or let this tool generate a new one and
-save it to a file you choose.
+A compromised continuation key can at worst stop your clock; it cannot
+re-swear or expand your pledge, so the custody risk is bounded.
+
+Future versions will let you designate any key you choose, including one
+you hold directly.
+
+  Current continuation key: ${CURRENT_INFRA_KEYS.continuation_pubkey}
 
 `);
-    const genCont = await askYN(
-      "Generate a new continuation keypair? (choose No to supply your own)",
-      true,
-    );
-    let continuationPath, continuationPubkey;
-    if (genCont) {
-      const defaultPath = "./pledge-continuation.json";
-      const customPath = await ask(
-        `Save new continuation key to [${defaultPath}]: `,
-      );
-      continuationPath = customPath || defaultPath;
-      if (existsSync(continuationPath)) {
-        die(`refusing to overwrite existing file: '${continuationPath}'`);
-      }
-      continuationPubkey = solanaGenKeypair(continuationPath);
-      process.stdout.write(
-        `  generated: ${continuationPubkey}\n` +
-        `  saved to:  ${continuationPath}\n` +
-        `  Keep this file safe. It is a signing key, but less sensitive than\n` +
-        `  the root. Losing it only breaks continuation; it cannot be used to\n` +
-        `  alter your pledge.\n`,
-      );
-    } else {
-      continuationPath = await ask("Path to your continuation keypair file: ");
-      if (!continuationPath || !existsSync(continuationPath)) {
-        die(`keypair file not found: '${continuationPath}'`);
-      }
-      continuationPubkey = solanaAddress(continuationPath);
-      process.stdout.write(`  pubkey: ${continuationPubkey}\n`);
+    const continuationPubkey = CURRENT_INFRA_KEYS.continuation_pubkey;
+    const consentCont = await askYN("Consent to this continuation key?", true);
+    if (!consentCont) {
+      rl.close();
+      process.stderr.write("Aborted.\n");
+      return;
     }
 
     // ---- Step 3: Vote accounts + per-node signatures ----
@@ -362,11 +398,16 @@ save it to a file you choose.
 === Step 3 of 4: Bound vote accounts ===
 
 List each vote account you are binding to this pledge. For each one, you
-will provide the path to a keypair that controls it (the account's
-withdrawer keypair is preferred; the identity keypair is acceptable).
+will provide the path to a keypair that controls it: either the account's
+withdrawer keypair (preferred) or its validator identity keypair.
 
-This tool will spawn 'solana sign-offchain-message' against each keypair
-file; the private key never leaves the solana CLI.
+This tool fetches the vote account from mainnet-beta and auto-detects which
+role your keypair plays (withdrawer or identity) by comparing the derived
+pubkey against the on-chain state. If neither matches, the keypair does not
+control this vote account and the ceremony aborts.
+
+Signing is done by 'solana sign-offchain-message'; the private key never
+leaves the solana CLI.
 
 Enter vote accounts one at a time. When done, leave the input blank.
 
@@ -392,18 +433,32 @@ Enter vote accounts one at a time. When done, leave the input blank.
       }
       seen.add(vote);
 
-      const kpPath = await ask(
+      process.stdout.write(`    fetching ${vote.slice(0, 8)}... from mainnet-beta...\n`);
+      const onChain = solanaVoteAccount(vote);
+      process.stdout.write(`      withdrawer: ${onChain.withdrawer}\n`);
+      process.stdout.write(`      identity:   ${onChain.identity}\n`);
+
+      const kpPath = resolvePath(await ask(
         `    Path to keypair controlling ${vote.slice(0, 8)}...: `,
-      );
+      ));
       if (!kpPath || !existsSync(kpPath)) {
         die(`keypair file not found: '${kpPath}'`);
       }
-      const kpKind = await ask(
-        `    Is this the 'withdrawer' or 'identity' keypair? [withdrawer/identity]: `,
-      );
-      if (!["withdrawer", "identity"].includes(kpKind)) {
-        die(`key kind must be 'withdrawer' or 'identity', got '${kpKind}'`);
+      const kpPubkey = solanaAddress(kpPath);
+      let kpKind;
+      if (kpPubkey === onChain.withdrawer) {
+        kpKind = "withdrawer";
+      } else if (kpPubkey === onChain.identity) {
+        kpKind = "identity";
+      } else {
+        die(
+          `keypair at '${kpPath}' derives to '${kpPubkey}',\n` +
+          `  which is neither the withdrawer ('${onChain.withdrawer}')\n` +
+          `  nor the identity ('${onChain.identity}') for vote account '${vote}'.\n` +
+          `  This keypair does not control that vote account.`,
+        );
       }
+      process.stdout.write(`    detected: ${kpKind} key (${kpPubkey})\n`);
 
       const msg = challenge(identityPubkey, vote);
       process.stdout.write(`    signing: ${msg}\n`);
@@ -588,10 +643,11 @@ function cmdFinalize(args) {
   }
 
   let canonical;
+  const fromPath = resolvePath(args.from);
   try {
-    canonical = readFileSync(args.from, "utf8");
+    canonical = readFileSync(fromPath, "utf8");
   } catch (err) {
-    die(`cannot read --from file '${args.from}': ${err.message}`);
+    die(`cannot read --from file '${fromPath}': ${err.message}`);
   }
   if (canonical.endsWith("\n")) canonical = canonical.slice(0, -1);
 
