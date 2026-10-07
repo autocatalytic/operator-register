@@ -5,19 +5,26 @@ Public toolkit for signing an Operator Register pledge. The Register itself is a
 
 ## What this is
 
-A zero-dependency Node.js tool that helps an operator produce the signed blob the Register needs to add them to the roster.
+A zero-dependency Node.js tool that walks an operator through signing a pledge against the current Register. The tool fetches your vote accounts from mainnet to auto-detect which keypair role you're using, spawns `solana sign-offchain-message` for each signature so your private keys never leave the `solana` CLI, and prints a JSON blob you paste into the Register's web interface.
 
 ## How to use
 
-Three steps:
+Clone the repo, then run:
 
-1. **Emit per-node binding messages.** The tool prints one plaintext message per vote account in your fleet. These are what each vote account signs to prove you control it.
+```
+node pledge-cli.mjs sign
+```
 
-2. **Sign each message.** Use `solana sign-offchain-message -k <keypair>.json "<message>"` with each vote account's identity key or withdrawer key. Also sign the canonical pledge payload with your root identity key.
+The tool prints the current Rules, Pledge, oracles bundle, and infrastructure keys with their Arweave URLs and on-chain SAS addresses so you can verify what you're signing against. It then walks you through four steps:
 
-3. **Assemble the final blob.** Pass the signed challenges back to the tool along with your root signature. It prints a JSON blob you paste into the Register's web interface.
+1. **Your root identity keypair.** The key that signs the pledge itself. In production this is your validator identity key, held offline.
+2. **Your continuation key.** In v0 this is a shared key the Register holds in secure hardware; the tool uses it by default. See `docs/infrastructure-keys-v0.md` for details.
+3. **Your bound vote accounts.** For each one, the tool fetches the vote account from mainnet, auto-detects whether your keypair is the withdrawer or the identity key, and spawns `solana sign-offchain-message` to sign the per-account binding.
+4. **Signing the pledge.** The tool builds the canonical pledge bytes and signs them with your root key.
 
-See `node pledge-cli.mjs --help` for the full flag reference, and the inline examples at the top of `pledge-cli.mjs`.
+At the end you get a JSON blob to paste into the Register's "Paste signed package" field.
+
+For scripted use (CI, batch ceremonies), `emit`, `assemble`, and `finalize` subcommands remain available. See `node pledge-cli.mjs --help`.
 
 ## Requirements
 
