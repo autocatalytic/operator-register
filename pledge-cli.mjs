@@ -15,7 +15,7 @@
 //
 //   emit      Print one plaintext binding message per bound vote account.
 //   assemble  Build canonical pledge payload from collected counter-sigs.
-//   finalize  Attach root signature to a saved canonical payload.
+//   finalize  Attach operator signature to a saved canonical payload.
 //
 // Zero dependencies. Node.js 20 or later. Requires 'solana' CLI on PATH for
 // 'sign' subcommand. All Ed25519 signing is done by the operator via
@@ -42,11 +42,11 @@ function resolvePath(p) {
 // -------- Current Register version pins (bump on each Rules revision) --------
 
 const CURRENT_RULES = {
-  version: "v1",
-  arweave_tx: "MtIdHsqQA6wueXOtDr_ZynFR_EjPbFaM1x8Vl6Mhrj4",
-  arweave_url: "https://arweave.net/MtIdHsqQA6wueXOtDr_ZynFR_EjPbFaM1x8Vl6Mhrj4",
-  sha256: "f2776d21a17c33fbe029ebdfaa7b478b996fbe58f83e7982ea19e8318e41e4df",
-  sas_pda: "6UYH81ftREVxZSkYXrzHQmrQspdGrsX8rk5VWUKtgMVi",
+  version: "v2",
+  arweave_tx: "iFFPDervvPC44sRdc_jijahhh5B694gUDGSMia5v1kk",
+  arweave_url: "https://arweave.net/iFFPDervvPC44sRdc_jijahhh5B694gUDGSMia5v1kk",
+  sha256: "d0bad75410fa79ff07a97ee6e5ee33cd5ab856e047ddb134dbc022beca780d7c",
+  sas_pda: "GEYd4CPsJfWcx326VGiW9teiLHJHrCgiLK3QdTextuhd",
 };
 
 const CURRENT_ORACLES = {
@@ -110,8 +110,8 @@ function die(msg) {
   process.exit(1);
 }
 
-function challenge(identityBase58, voteBase58) {
-  return `register-binding-v1:identity=${identityBase58}:vote_account=${voteBase58}`;
+function challenge(operatorBase58, voteBase58) {
+  return `register-binding-v2:operator=${operatorBase58}:vote_account=${voteBase58}`;
 }
 
 function currentRegisterEpoch() {
@@ -342,24 +342,36 @@ pledge that does not match the current Rules + Oracles hashes.
     const solanaVersion = checkSolanaCli();
     process.stdout.write(`\nFound: ${solanaVersion}\n`);
 
-    // ---- Step 1: Identity (root) keypair ----
+    // ---- Step 1: Operator keypair ----
 
     process.stdout.write(`
-=== Step 1 of 4: Your root identity key ===
+=== Step 1 of 4: Your operator key ===
 
-This is the key that signs the pledge itself. In a production ceremony this
-is your validator identity key, held offline. For a dry-run or dev ceremony
-it can be any keypair you control.
+The operator key is a dedicated key you create specifically for the
+Register. It signs the pledge, the completeness oath, and any change to
+the bound fleet. It is your name on the roll.
+
+IMPORTANT: this is NOT your validator identity key, NOT your withdrawer
+key, and NOT any other key your validator uses in daily operation. The
+Rules recommend a dedicated key held offline between ceremonies.
+
+If you don't have an operator key yet, generate one:
+  solana-keygen new -o ./operator.json
+
+You MAY instead sign with a key from validator operation (identity or
+withdrawer); the Register will accept it and the risk is yours (a key
+that signs votes is online). Rotation to a dedicated key is available
+later per Rules §7.8.
 
 `);
-    const identityPath = resolvePath(await ask("Path to your root identity keypair file: "));
-    if (!identityPath || !existsSync(identityPath)) {
-      die(`keypair file not found: '${identityPath}'`);
+    const operatorPath = resolvePath(await ask("Path to your operator keypair file: "));
+    if (!operatorPath || !existsSync(operatorPath)) {
+      die(`keypair file not found: '${operatorPath}'`);
     }
-    const identityPubkey = solanaAddress(identityPath);
-    process.stdout.write(`  pubkey: ${identityPubkey}\n`);
-    const identityOk = await askYN("Is this the right identity?", true);
-    if (!identityOk) {
+    const operatorPubkey = solanaAddress(operatorPath);
+    process.stdout.write(`  pubkey: ${operatorPubkey}\n`);
+    const operatorOk = await askYN("Is this the right operator key?", true);
+    if (!operatorOk) {
       rl.close();
       process.stderr.write("Aborted.\n");
       return;
@@ -460,7 +472,7 @@ Enter vote accounts one at a time. When done, leave the input blank.
       }
       process.stdout.write(`    detected: ${kpKind} key (${kpPubkey})\n`);
 
-      const msg = challenge(identityPubkey, vote);
+      const msg = challenge(operatorPubkey, vote);
       process.stdout.write(`    signing: ${msg}\n`);
       const sig = spawnSign(kpPath, msg);
       process.stdout.write(`    signature: ${sig.slice(0, 20)}...\n`);
@@ -482,17 +494,18 @@ Enter vote accounts one at a time. When done, leave the input blank.
     process.stdout.write(`
 === Step 4 of 4: Sign the full pledge ===
 
-Building canonical pledge bytes and signing with your root key...
+Building canonical pledge bytes and signing with your operator key...
 
 `);
     const epoch = currentRegisterEpoch();
     const signedAtUtc = new Date().toISOString();
     const payload = {
-      type: "operator-pledge.v1",
-      identity_pubkey: identityPubkey,
+      type: "operator-pledge.v2",
+      operator_pubkey: operatorPubkey,
       continuation_pubkey: continuationPubkey,
       register_rules_hash: CURRENT_RULES.sha256,
       oracles_hash: CURRENT_ORACLES.sha256,
+      pledge_template_hash: CURRENT_PLEDGE.sha256,
       covers_epochs: [epoch, epoch + 1, epoch + 2, epoch + 3],
       signed_at_slot: "0",
       signed_at_utc: signedAtUtc,
@@ -508,15 +521,15 @@ Building canonical pledge bytes and signing with your root key...
     process.stdout.write(`  canonical bytes: ${Buffer.byteLength(canonical, "utf8")}\n`);
     process.stdout.write(`  canonical sha256: ${canonicalSha}\n`);
     process.stdout.write(`  covers epochs: ${payload.covers_epochs.join(", ")}\n`);
-    process.stdout.write(`  signing with root keypair at ${identityPath}...\n`);
+    process.stdout.write(`  signing with operator keypair at ${operatorPath}...\n`);
 
-    const rootSig = spawnSign(identityPath, canonical);
-    process.stdout.write(`  root signature: ${rootSig.slice(0, 20)}...\n`);
+    const operatorSig = spawnSign(operatorPath, canonical);
+    process.stdout.write(`  operator signature: ${operatorSig.slice(0, 20)}...\n`);
 
     const blob = {
       canonical,
-      root_sig: rootSig,
-      root_sig_format: "restricted-ascii",
+      operator_sig: operatorSig,
+      operator_sig_format: "restricted-ascii",
     };
 
     process.stdout.write(`\n=== Done ===\n\n`);
@@ -537,8 +550,8 @@ Building canonical pledge bytes and signing with your root key...
 // -------- Scripted subcommands (unchanged behavior) --------
 
 function cmdEmit(args) {
-  if (!args.identity) die("--identity required");
-  if (!isSolanaPubkey(args.identity)) die(`invalid --identity: '${args.identity}'`);
+  if (!args.operator) die("--operator required");
+  if (!isSolanaPubkey(args.operator)) die(`invalid --operator: '${args.operator}'`);
   if (args.nodes.length === 0) die("at least one --node required");
 
   const nodes = args.nodes.map(parseNodeSpec);
@@ -546,13 +559,13 @@ function cmdEmit(args) {
   if (bound.length === 0) die("at least one bound node required");
 
   process.stderr.write(`\n=== Per-node binding ceremony ===\n`);
-  process.stderr.write(`Identity: ${args.identity}\n\n`);
+  process.stderr.write(`Operator: ${args.operator}\n\n`);
   process.stderr.write(`For each vote account below, run the printed command with the path to\n`);
   process.stderr.write(`that account's keypair (withdrawer preferred, identity acceptable).\n`);
   process.stderr.write(`Collect the base58 signatures. You will pass them to 'assemble'.\n`);
 
   for (const node of bound) {
-    const msg = challenge(args.identity, node.vote_account);
+    const msg = challenge(args.operator, node.vote_account);
     process.stdout.write(`\n=== Vote account ${node.vote_account} - sign this ===\n\n`);
     process.stdout.write(`solana sign-offchain-message -k <withdrawer-or-identity-keypair>.json \\\n`);
     process.stdout.write(`  '${msg}'\n\n`);
@@ -563,16 +576,18 @@ function cmdEmit(args) {
 }
 
 function cmdAssemble(args) {
-  if (!args.identity) die("--identity required");
+  if (!args.operator) die("--operator required");
   if (!args.continuation) die("--continuation required");
   if (!args["rules-hash"]) die("--rules-hash required");
   if (!args["oracles-hash"]) die("--oracles-hash required");
+  if (!args["pledge-hash"]) die("--pledge-hash required");
   if (args.nodes.length === 0) die("at least one --node required");
 
-  if (!isSolanaPubkey(args.identity)) die(`invalid --identity: '${args.identity}'`);
+  if (!isSolanaPubkey(args.operator)) die(`invalid --operator: '${args.operator}'`);
   if (!isSolanaPubkey(args.continuation)) die(`invalid --continuation: '${args.continuation}'`);
   if (!/^[0-9a-f]{64}$/i.test(args["rules-hash"])) die(`--rules-hash must be 64 hex chars`);
   if (!/^[0-9a-f]{64}$/i.test(args["oracles-hash"])) die(`--oracles-hash must be 64 hex chars`);
+  if (!/^[0-9a-f]{64}$/i.test(args["pledge-hash"])) die(`--pledge-hash must be 64 hex chars`);
 
   const nodes = args.nodes.map(parseNodeSpec);
   const bound = nodes.filter(n => n.status === "bound");
@@ -598,11 +613,12 @@ function cmdAssemble(args) {
   const signedAtSlot = args["signed-at-slot"] ?? "0";
 
   const payload = {
-    type: "operator-pledge.v1",
-    identity_pubkey: args.identity,
+    type: "operator-pledge.v2",
+    operator_pubkey: args.operator,
     continuation_pubkey: args.continuation,
     register_rules_hash: args["rules-hash"].toLowerCase(),
     oracles_hash: args["oracles-hash"].toLowerCase(),
+    pledge_template_hash: args["pledge-hash"].toLowerCase(),
     covers_epochs: [epoch, epoch + 1, epoch + 2, epoch + 3],
     signed_at_slot: signedAtSlot,
     signed_at_utc: signedAtUtc,
@@ -614,18 +630,19 @@ function cmdAssemble(args) {
   const bytes = Buffer.byteLength(canonical, "utf8");
 
   process.stderr.write(`\n=== Canonical pledge payload ===\n`);
-  process.stderr.write(`identity:        ${args.identity}\n`);
+  process.stderr.write(`operator:        ${args.operator}\n`);
   process.stderr.write(`continuation:    ${args.continuation}\n`);
   process.stderr.write(`register_rules:  ${payload.register_rules_hash}\n`);
   process.stderr.write(`oracles:         ${payload.oracles_hash}\n`);
+  process.stderr.write(`pledge_template: ${payload.pledge_template_hash}\n`);
   process.stderr.write(`covers_epochs:   ${payload.covers_epochs.join(", ")}\n`);
   process.stderr.write(`nodes:           ${nodes.length} (${bound.length} bound)\n`);
   process.stderr.write(`signed_at_utc:   ${signedAtUtc}\n`);
   process.stderr.write(`bytes:           ${bytes}\n`);
   process.stderr.write(`sha256:          ${sha}\n\n`);
-  process.stderr.write(`Save these canonical bytes to a file, then sign them with your root key:\n\n`);
+  process.stderr.write(`Save these canonical bytes to a file, then sign them with your operator key:\n\n`);
   process.stderr.write(`    node pledge-cli.mjs assemble ... > pledge.canonical\n`);
-  process.stderr.write(`    solana sign-offchain-message -k <root-keypair>.json "$(cat pledge.canonical)"\n\n`);
+  process.stderr.write(`    solana sign-offchain-message -k <operator-keypair>.json "$(cat pledge.canonical)"\n\n`);
   process.stderr.write(`Then run 'finalize' with the resulting signature.\n\n`);
 
   process.stdout.write(canonical);
@@ -633,13 +650,13 @@ function cmdAssemble(args) {
 
 function cmdFinalize(args) {
   if (!args.from) die("--from <path> required (file written by 'assemble')");
-  if (!args["root-sig"]) die("--root-sig required (base58 signature from solana sign-offchain-message)");
-  if (!isBase58Signature(args["root-sig"])) {
-    die(`invalid --root-sig: '${args["root-sig"]}' (must be base58, ~86-88 chars)`);
+  if (!args["operator-sig"]) die("--operator-sig required (base58 signature from solana sign-offchain-message)");
+  if (!isBase58Signature(args["operator-sig"])) {
+    die(`invalid --operator-sig: '${args["operator-sig"]}' (must be base58, ~86-88 chars)`);
   }
-  const fmt = args["root-sig-format"] ?? "restricted-ascii";
+  const fmt = args["operator-sig-format"] ?? "restricted-ascii";
   if (!["restricted-ascii", "utf8"].includes(fmt)) {
-    die(`--root-sig-format must be restricted-ascii|utf8, got '${fmt}'`);
+    die(`--operator-sig-format must be restricted-ascii|utf8, got '${fmt}'`);
   }
 
   let canonical;
@@ -657,22 +674,22 @@ function cmdFinalize(args) {
   } catch (err) {
     die(`--from file is not valid JSON: ${err.message}`);
   }
-  if (parsed?.type !== "operator-pledge.v1") {
-    die(`--from file is not an operator-pledge.v1 payload (type='${parsed?.type}')`);
+  if (parsed?.type !== "operator-pledge.v2") {
+    die(`--from file is not an operator-pledge.v2 payload (type='${parsed?.type}')`);
   }
 
   const sha = createHash("sha256").update(canonical, "utf8").digest("hex");
 
   const blob = {
     canonical,
-    root_sig: args["root-sig"],
-    root_sig_format: fmt,
+    operator_sig: args["operator-sig"],
+    operator_sig_format: fmt,
   };
 
   process.stderr.write(`\n=== Final pledge blob ===\n`);
   process.stderr.write(`canonical bytes: ${Buffer.byteLength(canonical, "utf8")}\n`);
   process.stderr.write(`canonical sha256: ${sha}\n`);
-  process.stderr.write(`root_sig_format: ${fmt}\n\n`);
+  process.stderr.write(`operator_sig_format: ${fmt}\n\n`);
   process.stderr.write(`Paste the JSON below into the Register's web interface:\n`);
   process.stderr.write(`---\n`);
 
@@ -696,16 +713,16 @@ Primary command:
 
 Scripted-use subcommands (for integrators who want finer control):
 
-  node pledge-cli.mjs emit --identity <base58> \\
+  node pledge-cli.mjs emit --operator <base58> \\
     --node <vote_account>:bound:beneficial_interest ...
 
-  node pledge-cli.mjs assemble --identity <base58> \\
+  node pledge-cli.mjs assemble --operator <base58> \\
     --continuation <base58> \\
-    --rules-hash <64hex> --oracles-hash <64hex> \\
+    --rules-hash <64hex> --oracles-hash <64hex> --pledge-hash <64hex> \\
     --node <vote_account>:bound:beneficial_interest:identity:<counter_sig> ...
 
   node pledge-cli.mjs finalize --from <canonical.json> \\
-    --root-sig <base58> [--root-sig-format restricted-ascii|utf8]
+    --operator-sig <base58> [--operator-sig-format restricted-ascii|utf8]
 
 See README.md for the full ceremony flow.
 `);
