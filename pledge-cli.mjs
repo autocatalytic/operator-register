@@ -42,27 +42,27 @@ function resolvePath(p) {
 // -------- Current Register version pins (bump on each Rules revision) --------
 
 const CURRENT_RULES = {
-  version: "v2",
-  arweave_tx: "iFFPDervvPC44sRdc_jijahhh5B694gUDGSMia5v1kk",
-  arweave_url: "https://arweave.net/iFFPDervvPC44sRdc_jijahhh5B694gUDGSMia5v1kk",
-  sha256: "d0bad75410fa79ff07a97ee6e5ee33cd5ab856e047ddb134dbc022beca780d7c",
-  sas_pda: "GEYd4CPsJfWcx326VGiW9teiLHJHrCgiLK3QdTextuhd",
+  version: "v0.11",
+  arweave_tx: "ojoqksJ_n32JfnnKCGyY64ZyjcMUijmEh5nsWwbAszo",
+  arweave_url: "https://arweave.net/ojoqksJ_n32JfnnKCGyY64ZyjcMUijmEh5nsWwbAszo",
+  sha256: "c21ec6230b592d43c4201b542fc6760aec53e9bd92b8cd31a949b7a61bb02352",
+  sas_pda: "3T7ws2dkXvqy68Lt6UusqGVm85JFtuHriPuurBQk5VrW",
 };
 
 const CURRENT_ORACLES = {
-  version: "v0",
-  arweave_tx: "cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
-  arweave_url: "https://arweave.net/cpEOspxEPvT5Acp3q8Tx0ByxUZMrt2ujmhk99gMqZbg",
-  sha256: "458c3278b03eadbfb624a3f431ba4fd27a0a3f607c6f017a5d1437762a414a8b",
+  version: "v0.1",
+  arweave_tx: "Eh8Q8I6a3lyO5FIqJxlIks6pUYrn7MN3qQdNpNJBtgQ",
+  arweave_url: "https://arweave.net/Eh8Q8I6a3lyO5FIqJxlIks6pUYrn7MN3qQdNpNJBtgQ",
+  sha256: "c9411cae3ae91acf02f478f6bed1e30774f4a7a57b9a14e2eb3c5f90e2f44b82",
   sas_pda: "6QWR4QErF4ygnjRfPfULamfs8u3HFCg5wFm1S1EzYXP8",
 };
 
 const CURRENT_PLEDGE = {
-  version: "v0",
-  arweave_tx: "S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
-  arweave_url: "https://arweave.net/S1vuDZ3pH7epsS8MGsZ3umQbvGPcaMSNb-a1sDaFElI",
-  sha256: "9079c70c14e37fbd07e57c981b71295d4b343c15e9a44e8b7c012df6e0695f37",
-  sas_pda: "EM38Xy2nWWbdS44VhdhgUXS7w8iNRKnAMFLiEFiwekvW",
+  version: "v0.3",
+  arweave_tx: "M5zzpo4a39fi9IysLrqf595wiMUMT2ayFiC-QUD9mVI",
+  arweave_url: "https://arweave.net/M5zzpo4a39fi9IysLrqf595wiMUMT2ayFiC-QUD9mVI",
+  sha256: "02a2dcfae4aa2829415c50fb157c21f524949b783b22bfb28ae125292ed11eb5",
+  sas_pda: "6VBX5pGWcy7d2rCH54z6vXtJKHAtMm8k5prFbu51aCQv",
 };
 
 // Register-held infrastructure keys. v0 ships with the Register holding the
