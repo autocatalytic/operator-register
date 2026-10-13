@@ -67,12 +67,9 @@ const CURRENT_PLEDGE = {
 
 // Register-held infrastructure keys. v0 ships with the Register holding the
 // continuation key in non-extractable KMS; operators consent by naming it in
-// their pledge. Rotations ship as a new entry in this block.
+// their pledge. Rotations ship as a new continuation_pubkey here and a new
+// CLI release; operators pull and re-pledge against the new key.
 const CURRENT_INFRA_KEYS = {
-  version: "v0",
-  arweave_tx: "jRSxQFJAlVHsglLALJ4ER7xds5eDJ4llD5pH9ejVSiU",
-  arweave_url: "https://arweave.net/jRSxQFJAlVHsglLALJ4ER7xds5eDJ4llD5pH9ejVSiU",
-  sha256: "2163eccf755a1301e8b1533c7ef0a24b959b93482943f9d809999e5cc80bdfd2",
   continuation_pubkey: "J7socF4aMnzkP9uh52STQ1hFuryvAxHh94AQmBoKWtVo",
 };
 
@@ -341,10 +338,7 @@ Current Register versions you are about to pledge against:
     Arweave: ${CURRENT_PLEDGE.arweave_url}
     on-chain: ${CURRENT_PLEDGE.sas_pda}
 
-  Infrastructure keys (${CURRENT_INFRA_KEYS.version})
-    sha256:  ${CURRENT_INFRA_KEYS.sha256}
-    Arweave: ${CURRENT_INFRA_KEYS.arweave_url}
-    continuation pubkey: ${CURRENT_INFRA_KEYS.continuation_pubkey}
+  Current continuation key: ${CURRENT_INFRA_KEYS.continuation_pubkey}
 
 Fetch each Arweave URL and run 'shasum -a 256' against the file if you want
 to verify the hashes above before signing. The web interface will reject a
