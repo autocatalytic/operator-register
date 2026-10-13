@@ -26,10 +26,17 @@ At the end you get a JSON blob to paste into the Register's "Paste signed packag
 
 For scripted use (CI, batch ceremonies), `emit`, `assemble`, and `finalize` subcommands remain available. See `node pledge-cli.mjs --help`.
 
-## Requirements
+## Prerequisites
 
-- Node.js 20 or later (uses the built-in Ed25519 primitive via `node:crypto`)
-- The `solana` CLI, for `sign-offchain-message`
+Before you run `node pledge-cli.mjs sign`, make sure you have:
+
+- **Node.js 20 or later.** Verify with `node --version`.
+- **The Solana CLI.** The ceremony spawns `solana sign-offchain-message` and `solana vote-account` under the hood; your private keys never leave the Solana CLI. Install from https://docs.anza.xyz/cli/install.
+- **Solana CLI set to mainnet-beta.** The Register runs on Solana mainnet; vote accounts, Rules, Pledge template, and Oracles bundle all live there. Set it with:
+
+      solana config set --url mainnet-beta
+
+  The pledge tool passes `--url mainnet-beta` explicitly on each command, but setting the default also keeps the rest of your Solana workflow (balance checks, keypair derivation) consistent.
 - No `npm install`. Zero dependencies.
 
 ## Reading the Register

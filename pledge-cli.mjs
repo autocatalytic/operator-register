@@ -200,6 +200,26 @@ function checkSolanaCli() {
   return r.stdout.trim();
 }
 
+function checkSolanaClusterDefault() {
+  // Non-fatal: the tool passes --url mainnet-beta on every spawn that touches
+  // the chain, so a mismatched local default never breaks the ceremony. We
+  // warn anyway so operators who are mid-devnet-session see a reminder that
+  // Register state (vote accounts, Rules, Pledge, Oracles) lives on mainnet.
+  const r = spawnSync("solana", ["config", "get", "json_rpc_url"], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const match = r.stdout.match(/RPC URL:\s*(\S+)/);
+  const url = match ? match[1] : r.stdout.trim();
+  if (!/mainnet-beta|mainnet\.helius-rpc|api\.mainnet-beta\.solana/.test(url)) {
+    process.stdout.write(
+      `\nNote: your local 'solana' CLI default cluster is '${url}', not mainnet-beta.\n` +
+      `  This tool passes --url mainnet-beta explicitly, so the ceremony will work.\n` +
+      `  To align the rest of your Solana workflow, run:\n` +
+      `    solana config set --url mainnet-beta\n`,
+    );
+  }
+  return url;
+}
+
 function spawnSign(keypairPath, message) {
   // Spawn solana sign-offchain-message as a child process. The private key
   // bytes never leave the 'solana' CLI; this tool only passes the keypair
@@ -341,6 +361,7 @@ pledge that does not match the current Rules + Oracles hashes.
 
     const solanaVersion = checkSolanaCli();
     process.stdout.write(`\nFound: ${solanaVersion}\n`);
+    checkSolanaClusterDefault();
 
     // ---- Step 1: Operator keypair ----
 
